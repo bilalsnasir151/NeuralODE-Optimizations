@@ -30,17 +30,17 @@ if args.adjoint:
 else:
     from torchdiffeq import odeint
 
-
-
 if __name__ == '__main__':
 
     makedirs(args.save)
     logger = get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.path.abspath(__file__))
     logger.info(args)
+    
+    torch.set_default_dtype(torch.float32)
 
     #find device
-    device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 'cpu')
-
+    #device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 'cpu')
+    device = torch.device("mps")
 
     #first section of network, primarily focusing on reducing spatial dimensions of input while extracting basic to complex features
     downsampling_layers = get_mnist_downsampling_layers()

@@ -29,6 +29,8 @@ def get_mnist_loaders(batch_size=128, test_batch_size=1000):
 
     return train_loader, test_loader, train_eval_loader
 ''' DATASET LOADER for MNIST
+
+
 ** TASK IS TO LOAD MNIST DATA **
 
 - batch size = number of samples in each batch for the training dataset

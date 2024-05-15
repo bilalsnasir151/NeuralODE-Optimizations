@@ -82,7 +82,11 @@ class ODEBlock(nn.Module):
 
     def forward(self, x):
         self.integration_time = self.integration_time.type_as(x)
-        out = self.odeint(self.odefunc, x, self.integration_time, rtol=self.tol, atol=self.tol)
+        rtol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
+        atol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
+        print("rtol dtype:", rtol.dtype)
+        print("atol dtype:", atol.dtype)
+        out = self.odeint(self.odefunc, x, self.integration_time, rtol=rtol, atol=atol)
         return out[1]
 
     @property
