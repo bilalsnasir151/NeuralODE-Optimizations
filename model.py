@@ -30,6 +30,25 @@ def get_mnist_downsampling_layers():
     ]        
     return downsampling_layers
 
+##CIFAR 10 downsampling
+def get_cifar10_downsampling_layers():
+    downsampling_layers = [
+        #applies filters to extract low level features
+        nn.Conv2d(3, 64, 3, 1, 1),
+        #normalizes values across certain dimensions of input data
+        norm(64),
+        #activation function
+        nn.ReLU(inplace=True),
+
+        nn.Conv2d(64, 64, 4, 2, 1),
+        norm(64),
+        nn.ReLU(inplace=True),
+
+        nn.Conv2d(64, 64, 4, 2, 1),
+        norm(64),
+        nn.ReLU(inplace=True),
+    ]        
+    return downsampling_layers
 
 ##MNIST NODE BLOCK##
 #neural ode concatenation of time

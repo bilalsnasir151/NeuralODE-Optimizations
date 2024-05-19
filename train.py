@@ -8,9 +8,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-from model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers
+from model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
 from utils import norm, RunningAverageMeter, inf_generator, learning_rate_with_decay, accuracy, makedirs, get_logger, count_parameters
-from data import get_mnist_loaders
+from data import get_mnist_loaders, get_cifar10_loaders
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--tol', type=float, default=1e-3)
@@ -40,10 +40,12 @@ if __name__ == '__main__':
 
     #find device
     #device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 'cpu')
-    device = torch.device("mps")
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    print(device)
 
     #first section of network, primarily focusing on reducing spatial dimensions of input while extracting basic to complex features
-    downsampling_layers = get_mnist_downsampling_layers()
+    #downsampling_layers = get_mnist_downsampling_layers()
+    downsampling_layers = get_cifar10_downsampling_layers()
     feature_layers = [ODEBlock(ODEfunc(64), odeint, args.tol)]
     fc_layers = get_fc_layers()
 
@@ -54,7 +56,8 @@ if __name__ == '__main__':
 
     criterion = nn.CrossEntropyLoss().to(device)
 
-    train_loader, test_loader, train_eval_loader = get_mnist_loaders(args.batch_size, args.test_batch_size)
+    #train_loader, test_loader, train_eval_loader = get_mnist_loaders(args.batch_size, args.test_batch_size)
+    train_loader, test_loader, train_eval_loader = get_cifar10_loaders(args.batch_size, args.test_batch_size)
 
     data_gen = inf_generator(train_loader)
     batches_per_epoch = len(train_loader)
