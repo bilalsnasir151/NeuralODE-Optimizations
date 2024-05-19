@@ -56,3 +56,35 @@ DataLoader():
 
     RETURNS three loader configurations
 '''
+
+
+def get_cifar10_loaders(batch_size=128, test_batch_size=1000):
+    # Define the transformation for the training data
+    transform_train = transforms.Compose([
+        transforms.ToTensor(),
+    ])
+
+    # Define the transformation for the test data
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+    ])
+
+    # Create the training data loader
+    train_loader = DataLoader(
+        datasets.CIFAR10(root='./data/cifar10', train=True, download=True, transform=transform_train),
+        batch_size=batch_size, shuffle=True, num_workers=1, drop_last=True
+    )
+
+    # Create the training evaluation data loader
+    train_eval_loader = DataLoader(
+        datasets.CIFAR10(root='./data/cifar10', train=True, download=True, transform=transform_test),
+        batch_size=test_batch_size, shuffle=False, num_workers=1, drop_last=True
+    )
+
+    # Create the test data loader
+    test_loader = DataLoader(
+        datasets.CIFAR10(root='./data/cifar10', train=False, download=True, transform=transform_test),
+        batch_size=test_batch_size, shuffle=False, num_workers=1, drop_last=True
+    )
+
+    return train_loader, test_loader, train_eval_loader
