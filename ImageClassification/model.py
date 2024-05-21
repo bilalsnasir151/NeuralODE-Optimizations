@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from utils import norm, Flatten
+from ImageClassification.utils import norm, Flatten
 
 
 
@@ -81,12 +81,15 @@ class ODEfunc(nn.Module):
 
     def forward(self, t, x):
         self.nfe += 1
+
         out = self.norm1(x)
         out = self.relu(out)
         out = self.conv1(t, out)
+
         out = self.norm2(out)
         out = self.relu(out)
         out = self.conv2(t, out)
+
         out = self.norm3(out)
         return out
     
@@ -103,8 +106,6 @@ class ODEBlock(nn.Module):
         self.integration_time = self.integration_time.type_as(x)
         rtol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
         atol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
-        print("rtol dtype:", rtol.dtype)
-        print("atol dtype:", atol.dtype)
         out = self.odeint(self.odefunc, x, self.integration_time, rtol=rtol, atol=atol)
         return out[1]
 
