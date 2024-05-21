@@ -8,21 +8,20 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-from model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
-from utils import norm, RunningAverageMeter, inf_generator, learning_rate_with_decay, accuracy, makedirs, get_logger, count_parameters
-from data import get_mnist_loaders, get_cifar10_loaders
+from ImageClassification.model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
+from ImageClassification.utils import norm, RunningAverageMeter, inf_generator, learning_rate_with_decay, accuracy, makedirs, get_logger, count_parameters
+from ImageClassification.data import get_mnist_loaders, get_cifar10_loaders
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--mnist', type=eval, default=False, choices=[True, False])
 parser.add_argument('--tol', type=float, default=1e-3)
 parser.add_argument('--adjoint', type=eval, default=False, choices=[True, False])
-parser.add_argument('--downsampling-method', type=str, default='conv', choices=['conv', 'res'])
 parser.add_argument('--nepochs', type=int, default=160)
 parser.add_argument('--lr', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=128)
 parser.add_argument('--test_batch_size', type=int, default=1000)
 parser.add_argument('--save', type=str, default='./experiment1')
 parser.add_argument('--debug', action='store_true')
-parser.add_argument('--gpu', type=int, default=0)
 args = parser.parse_args()
 
 if args.adjoint:
@@ -44,8 +43,11 @@ if __name__ == '__main__':
     print(device)
 
     #first section of network, primarily focusing on reducing spatial dimensions of input while extracting basic to complex features
-    #downsampling_layers = get_mnist_downsampling_layers()
-    downsampling_layers = get_cifar10_downsampling_layers()
+    if args.mnist:
+        downsampling_layers = get_mnist_downsampling_layers()
+    else:
+        downsampling_layers = get_cifar10_downsampling_layers()
+
     feature_layers = [ODEBlock(ODEfunc(64), odeint, args.tol)]
     fc_layers = get_fc_layers()
 
@@ -56,8 +58,10 @@ if __name__ == '__main__':
 
     criterion = nn.CrossEntropyLoss().to(device)
 
-    #train_loader, test_loader, train_eval_loader = get_mnist_loaders(args.batch_size, args.test_batch_size)
-    train_loader, test_loader, train_eval_loader = get_cifar10_loaders(args.batch_size, args.test_batch_size)
+    if args.mnist:
+        train_loader, test_loader, train_eval_loader = get_mnist_loaders(args.batch_size, args.test_batch_size)
+    else:
+        train_loader, test_loader, train_eval_loader = get_cifar10_loaders(args.batch_size, args.test_batch_size)
 
     data_gen = inf_generator(train_loader)
     batches_per_epoch = len(train_loader)
