@@ -103,7 +103,7 @@ if __name__ == "__main__":
     b_nfe_meter = RunningAverageMeter()
     end = time.time()
 
-    for itr in range(args.nepochs * batches_per_epoch):
+    for epoch in range(args.nepochs):
         with torch.profiler.profile(
             activities=[
                 torch.profiler.ProfilerActivity.CPU,
@@ -115,55 +115,49 @@ if __name__ == "__main__":
             ],
             record_shapes=True,
         ) as prof:
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = lr_fn(itr)
+            for _ in range(batches_per_epoch):
+                x, y = data_gen.__next__()
+                x = x.to(device)
+                y = y.to(device)
 
-            x, y = data_gen.__next__()
-            x = x.to(device)
-            y = y.to(device)
+                optimizer.zero_grad()
+                with torch.profiler.record_function("model_forward_backward"):
+                    logits = model(x)
+                    loss = criterion(logits, y)
+                    loss.backward()
+                optimizer.step()
 
-            optimizer.zero_grad()
+                nfe_forward = feature_layers[0].nfe
+                feature_layers[0].nfe = 0
+                nfe_backward = feature_layers[0].nfe
+                feature_layers[0].nfe = 0
 
-            # Start a new profiler instance each iteration
+                batch_time_meter.update(time.time() - end)
+                f_nfe_meter.update(nfe_forward)
+                b_nfe_meter.update(nfe_backward)
+                end = time.time()
 
-            with torch.profiler.record_function("model_forward_backward"):
-                logits = model(x)
-                loss = criterion(logits, y)
-                loss.backward()
-            optimizer.step()  # Now inside the profiling context
+        # Now outside the profiler context
+        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
 
-            # Profiling results
-            print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
-
-            nfe_forward = feature_layers[0].nfe
-            feature_layers[0].nfe = 0
-            nfe_backward = feature_layers[0].nfe
-            feature_layers[0].nfe = 0
-
-            batch_time_meter.update(time.time() - end)
-            f_nfe_meter.update(nfe_forward)
-            b_nfe_meter.update(nfe_backward)
-            end = time.time()
-
-            if itr % batches_per_epoch == 0:
-                with torch.no_grad():
-                    train_acc = accuracy(model, train_eval_loader, device)
-                    val_acc = accuracy(model, test_loader, device)
-                    if val_acc > best_acc:
-                        torch.save(
-                            {"state_dict": model.state_dict(), "args": args},
-                            os.path.join(args.save, "model.pth"),
-                        )
-                        best_acc = val_acc
-                    logger.info(
-                        "Epoch {:04d} | Time {:.3f} ({:.3f}) | NFE-F {:.1f} | NFE-B {:.1f} | "
-                        "Train Acc {:.4f} | Test Acc {:.4f}".format(
-                            itr // batches_per_epoch,
-                            batch_time_meter.val,
-                            batch_time_meter.avg,
-                            f_nfe_meter.avg,
-                            b_nfe_meter.avg,
-                            train_acc,
-                            val_acc,
-                        )
-                    )
+        with torch.no_grad():
+            train_acc = accuracy(model, train_eval_loader, device)
+            val_acc = accuracy(model, test_loader, device)
+            if val_acc > best_acc:
+                torch.save(
+                    {"state_dict": model.state_dict(), "args": args},
+                    os.path.join(args.save, "model.pth"),
+                )
+                best_acc = val_acc
+            logger.info(
+                "Epoch {:04d} | Time {:.3f} ({:.3f}) | NFE-F {:.1f} | NFE-B {:.1f} | "
+                "Train Acc {:.4f} | Test Acc {:.4f}".format(
+                    epoch,
+                    batch_time_meter.val,
+                    batch_time_meter.avg,
+                    f_nfe_meter.avg,
+                    b_nfe_meter.avg,
+                    train_acc,
+                    val_acc,
+                )
+            )
