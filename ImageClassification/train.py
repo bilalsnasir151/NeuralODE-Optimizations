@@ -2,6 +2,7 @@ import os
 import argparse
 import time
 import torch
+from torch.profiler import profile, record_function, ProfilerActivity
 import torch.nn as nn
 from ImageClassification.model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
 from ImageClassification.utils import RunningAverageMeter, inf_generator, learning_rate_with_decay, accuracy, makedirs, get_logger, count_parameters
@@ -53,6 +54,16 @@ if __name__ == '__main__':
 
     criterion = nn.CrossEntropyLoss().to(device)
 
+
+    # Setting up the profiler
+    profiler = profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],  # Include CUDA if running on GPU
+        record_shapes=True,
+        with_stack=True,
+        profile_memory=True,  # Set this to True if you want to profile memory usage as well
+        use_cuda=torch.cuda.is_available()
+    )
+
     if args.mnist:
         train_loader, test_loader, train_eval_loader = get_mnist_loaders(args.batch_size, args.test_batch_size)
     else:
@@ -79,18 +90,24 @@ if __name__ == '__main__':
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr_fn(itr)
 
-        optimizer.zero_grad()
-        x, y = data_gen.__next__()
-        x = x.to(device)
-        y = y.to(device)
-        logits = model(x)
-        loss = criterion(logits, y)
+        # Start profiling
+        with profiler as prof:
+            with record_function("model_forward_backward"):
+                optimizer.zero_grad()
+                x, y = data_gen.__next__()
+                x = x.to(device)
+                y = y.to(device)
+                logits = model(x)
+                loss = criterion(logits, y)
 
-        nfe_forward = feature_layers[0].nfe
-        feature_layers[0].nfe = 0
+                nfe_forward = feature_layers[0].nfe
+                feature_layers[0].nfe = 0
 
-        loss.backward()
-        optimizer.step()
+                loss.backward()
+                optimizer.step()
+
+        # Print profiler results
+        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
 
         nfe_backward = feature_layers[0].nfe
         feature_layers[0].nfe = 0
@@ -100,7 +117,8 @@ if __name__ == '__main__':
         f_nfe_meter.update(nfe_forward)
         b_nfe_meter.update(nfe_backward)
         end = time.time()
-
+        profiler.export_chrome_trace("trace.json")
+        
         if itr % batches_per_epoch == 0:
             with torch.no_grad():
                 train_acc = accuracy(model, train_eval_loader, device)
