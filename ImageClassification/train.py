@@ -4,9 +4,9 @@ import time
 import torch
 from torch.profiler import profile, record_function, ProfilerActivity
 import torch.nn as nn
-from ImageClassification.model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
-from ImageClassification.utils import RunningAverageMeter, inf_generator, learning_rate_with_decay, accuracy, makedirs, get_logger, count_parameters
-from ImageClassification.data import get_mnist_loaders, get_cifar10_loaders
+from model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
+from utils import RunningAverageMeter, inf_generator, learning_rate_with_decay, accuracy, makedirs, get_logger, count_parameters
+from data import get_mnist_loaders, get_cifar10_loaders
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mnist', type=eval, default=False, choices=[True, False])
@@ -55,14 +55,6 @@ if __name__ == '__main__':
     criterion = nn.CrossEntropyLoss().to(device)
 
 
-    # Setting up the profiler
-    profiler = profile(
-        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],  # Include CUDA if running on GPU
-        record_shapes=True,
-        with_stack=True,
-        profile_memory=True,  # Set this to True if you want to profile memory usage as well
-        use_cuda=torch.cuda.is_available()
-    )
 
     if args.mnist:
         train_loader, test_loader, train_eval_loader = get_mnist_loaders(args.batch_size, args.test_batch_size)
@@ -90,46 +82,46 @@ if __name__ == '__main__':
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr_fn(itr)
 
-        # Start profiling
-        with profiler as prof:
-            with record_function("model_forward_backward"):
-                optimizer.zero_grad()
-                x, y = data_gen.__next__()
-                x = x.to(device)
-                y = y.to(device)
-                logits = model(x)
-                loss = criterion(logits, y)
+        x, y = data_gen.__next__()
+   	x = x.to(device)
+    	y = y.to(device)
 
-                nfe_forward = feature_layers[0].nfe
-                feature_layers[0].nfe = 0
+    	optimizer.zero_grad()
 
-                loss.backward()
-                optimizer.step()
+    	# Start a new profiler instance each iteration
+    	with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, 
+                                           torch.profiler.ProfilerActivity.CUDA if torch.cuda.is_available() else torch.profiler.ProfilerActivity.CPU],
+                                record_shapes=True) as prof:
+        	with torch.profiler.record_function("model_forward_backward"):
+            		logits = model(x)
+            		loss = criterion(logits, y)
+            		loss.backward()
+        	optimizer.step()  # Now inside the profiling context
 
-        # Print profiler results
-        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
+    	# Profiling results
+    	print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
 
-        nfe_backward = feature_layers[0].nfe
-        feature_layers[0].nfe = 0
+    	nfe_forward = feature_layers[0].nfe
+    	feature_layers[0].nfe = 0
+    	nfe_backward = feature_layers[0].nfe
+    	feature_layers[0].nfe = 0
 
-        batch_time_meter.update(time.time() - end)
+    	batch_time_meter.update(time.time() - end)
+    	f_nfe_meter.update(nfe_forward)
+    	b_nfe_meter.update(nfe_backward)
+    	end = time.time()
 
-        f_nfe_meter.update(nfe_forward)
-        b_nfe_meter.update(nfe_backward)
-        end = time.time()
-        profiler.export_chrome_trace("trace.json")
-        
-        if itr % batches_per_epoch == 0:
+    	if itr % batches_per_epoch == 0:
             with torch.no_grad():
-                train_acc = accuracy(model, train_eval_loader, device)
-                val_acc = accuracy(model, test_loader, device)
-                if val_acc > best_acc:
-                    torch.save({'state_dict': model.state_dict(), 'args': args}, os.path.join(args.save, 'model.pth'))
-                    best_acc = val_acc
-                logger.info(
-                    "Epoch {:04d} | Time {:.3f} ({:.3f}) | NFE-F {:.1f} | NFE-B {:.1f} | "
-                    "Train Acc {:.4f} | Test Acc {:.4f}".format(
-                        itr // batches_per_epoch, batch_time_meter.val, batch_time_meter.avg, f_nfe_meter.avg,
-                        b_nfe_meter.avg, train_acc, val_acc
-                    )
+            	train_acc = accuracy(model, train_eval_loader, device)
+            	val_acc = accuracy(model, test_loader, device)
+            	if val_acc > best_acc:
+            		torch.save({'state_dict': model.state_dict(), 'args': args}, os.path.join(args.save, 'model.pth'))
+                	best_acc = val_acc
+            	logger.info(
+                "Epoch {:04d} | Time {:.3f} ({:.3f}) | NFE-F {:.1f} | NFE-B {:.1f} | "
+                "Train Acc {:.4f} | Test Acc {:.4f}".format(
+                    itr // batches_per_epoch, batch_time_meter.val, batch_time_meter.avg, f_nfe_meter.avg,
+                    b_nfe_meter.avg, train_acc, val_acc
                 )
+            )

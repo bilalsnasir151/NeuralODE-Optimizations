@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from ImageClassification.utils import norm, Flatten
+from utils import norm, Flatten
 
 
 
