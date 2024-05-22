@@ -1,15 +1,10 @@
 import os
 import argparse
-import logging
 import time
-import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
 from ImageClassification.model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
-from ImageClassification.utils import norm, RunningAverageMeter, inf_generator, learning_rate_with_decay, accuracy, makedirs, get_logger, count_parameters
+from ImageClassification.utils import RunningAverageMeter, inf_generator, learning_rate_with_decay, accuracy, makedirs, get_logger, count_parameters
 from ImageClassification.data import get_mnist_loaders, get_cifar10_loaders
 
 parser = argparse.ArgumentParser()

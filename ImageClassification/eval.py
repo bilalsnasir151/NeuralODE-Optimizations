@@ -1,14 +1,10 @@
 import os
 import argparse
-import logging
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
 from ImageClassification.model import ODEfunc, ODEBlock, get_fc_layers, get_cifar10_downsampling_layers, get_mnist_downsampling_layers
-from ImageClassification.utils import norm, accuracy, get_logger
-from ImageClassification.data import get_cifar10_loaders
+from ImageClassification.utils import accuracy, get_logger
+from ImageClassification.data import get_cifar10_loaders, get_mnist_loaders
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--tol', type=float, default=1e-3)
@@ -48,7 +44,7 @@ if __name__ == '__main__':
     model.eval()
 
     if args.mnist:
-        _, test_loader, _ = get_cifar10_loaders(batch_size=args.batch_size, test_batch_size=args.batch_size)
+        _, test_loader, _ = get_mnist_loaders(batch_size=args.batch_size, test_batch_size=args.batch_size)
     else:
         # Get the CIFAR-10 data loaders
         _, test_loader, _ = get_cifar10_loaders(batch_size=args.batch_size, test_batch_size=args.batch_size)
