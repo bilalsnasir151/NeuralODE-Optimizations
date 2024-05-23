@@ -1,0 +1,264 @@
+/home/certres/bnasir/Desktop/NeuralODE-Optimizations/ImageClassification/train.py
+import os
+import argparse
+import time
+import torch
+import torch.nn as nn
+from model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
+from utils import RunningAverageMeter, inf_generator, learning_rate_with_decay, accuracy, makedirs, get_logger, count_parameters
+from data import get_mnist_loaders, get_cifar10_loaders
+import torch.profiler
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--mnist', type=eval, default=False, choices=[True, False])
+parser.add_argument('--tol', type=float, default=1e-3)
+parser.add_argument('--adjoint', type=eval, default=False, choices=[True, False])
+parser.add_argument('--nepochs', type=int, default=160)
+parser.add_argument('--lr', type=float, default=0.1)
+parser.add_argument('--batch_size', type=int, default=128)
+parser.add_argument('--test_batch_size', type=int, default=1000)
+parser.add_argument('--save', type=str, default='./experiment1')
+parser.add_argument('--debug', action='store_true')
+args = parser.parse_args()
+
+if args.adjoint:
+    from torchdiffeq import odeint_adjoint as odeint
+else:
+    from torchdiffeq import odeint
+
+if __name__ == '__main__':
+
+    makedirs(args.save)
+    logger = get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.path.abspath(__file__))
+    logger.info(args)
+    
+    torch.set_default_dtype(torch.float32)
+
+    #find device
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+    print(device)
+
+    #first section of network, primarily focusing on reducing spatial dimensions of input while extracting basic to complex features
+    if args.mnist:
+        downsampling_layers = get_mnist_downsampling_layers()
+    else:
+        downsampling_layers = get_cifar10_downsampling_layers()
+
+    feature_layers = [ODEBlock(ODEfunc(64), odeint, args.tol)]
+    fc_layers = get_fc_layers()
+
+    model = nn.Sequential(*downsampling_layers, *feature_layers, *fc_layers).to(device)
+
+    logger.info(model)
+    logger.info('Number of parameters: {}'.format(count_parameters(model)))
+
+    criterion = nn.CrossEntropyLoss().to(device)
+
+    if args.mnist:
+        train_loader, test_loader, train_eval_loader = get_mnist_loaders(args.batch_size, args.test_batch_size)
+    else:
+        train_loader, test_loader, train_eval_loader = get_cifar10_loaders(args.batch_size, args.test_batch_size)
+
+    data_gen = inf_generator(train_loader)
+    batches_per_epoch = len(train_loader)
+
+    lr_fn = learning_rate_with_decay(
+        args.batch_size, batch_denom=128, batches_per_epoch=batches_per_epoch, boundary_epochs=[60, 100, 140],
+        decay_rates=[1, 0.1, 0.01, 0.001], lr = args.lr
+    )
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
+
+    best_acc = 0
+    batch_time_meter = RunningAverageMeter()
+    f_nfe_meter = RunningAverageMeter()
+    b_nfe_meter = RunningAverageMeter()
+    end = time.time()
+
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA
+        ],
+        schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(args.save),
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=True
+    ) as prof:
+        for itr in range(args.nepochs * batches_per_epoch):
+
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr_fn(itr)
+
+            optimizer.zero_grad()
+            x, y = data_gen.__next__()
+            x = x.to(device)
+            y = y.to(device)
+            logits = model(x)
+            loss = criterion(logits, y)
+
+            nfe_forward = feature_layers[0].nfe
+            feature_layers[0].nfe = 0
+
+            loss.backward()
+            optimizer.step()
+
+            nfe_backward = feature_layers[0].nfe
+            feature_layers[0].nfe = 0
+
+            batch_time_meter.update(time.time() - end)
+
+            f_nfe_meter.update(nfe_forward)
+            b_nfe_meter.update(nfe_backward)
+            end = time.time()
+
+            prof.step()  # Step the profiler
+
+            if itr % batches_per_epoch == 0:
+                with torch.no_grad():
+                    train_acc = accuracy(model, train_eval_loader, device)
+                    val_acc = accuracy(model, test_loader, device)
+                    if val_acc > best_acc:
+                        torch.save({'state_dict': model.state_dict(), 'args': args}, os.path.join(args.save, 'model.pth'))
+                        best_acc = val_acc
+                    logger.info(
+                        "Epoch {:04d} | Time {:.3f} ({:.3f}) | NFE-F {:.1f} | NFE-B {:.1f} | "
+                        "Train Acc {:.4f} | Test Acc {:.4f}".format(
+                            itr // batches_per_epoch, batch_time_meter.val, batch_time_meter.avg, f_nfe_meter.avg,
+                            b_nfe_meter.avg, train_acc, val_acc
+                        )
+                    )
+    print(prof.key_averages().table(sort_by="cpu_time_total"))
+    print(f"Profiling data saved to {args.save}")
+
+Namespace(mnist=True, tol=0.001, adjoint=False, nepochs=100, lr=0.1, batch_size=128, test_batch_size=1000, save='./mnistNoAdj', debug=False)
+Sequential(
+  (0): Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 1))
+  (1): GroupNorm(32, 64, eps=1e-05, affine=True)
+  (2): ReLU(inplace=True)
+  (3): Conv2d(64, 64, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
+  (4): GroupNorm(32, 64, eps=1e-05, affine=True)
+  (5): ReLU(inplace=True)
+  (6): Conv2d(64, 64, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
+  (7): ODEBlock(
+    (odefunc): ODEfunc(
+      (norm1): GroupNorm(32, 64, eps=1e-05, affine=True)
+      (relu): ReLU(inplace=True)
+      (conv1): ConcatConv2d(
+        (_layer): Conv2d(65, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+      )
+      (norm2): GroupNorm(32, 64, eps=1e-05, affine=True)
+      (conv2): ConcatConv2d(
+        (_layer): Conv2d(65, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+      )
+      (norm3): GroupNorm(32, 64, eps=1e-05, affine=True)
+    )
+  )
+  (8): GroupNorm(32, 64, eps=1e-05, affine=True)
+  (9): ReLU(inplace=True)
+  (10): AdaptiveAvgPool2d(output_size=(1, 1))
+  (11): Flatten()
+  (12): Linear(in_features=64, out_features=10, bias=True)
+)
+Number of parameters: 208266
+Epoch 0000 | Time 2.661 (2.661) | NFE-F 32.0 | NFE-B 0.0 | Train Acc 0.1124 | Test Acc 0.1135
+Epoch 0001 | Time 0.278 (0.085) | NFE-F 20.3 | NFE-B 0.0 | Train Acc 0.9767 | Test Acc 0.9752
+Epoch 0002 | Time 0.345 (0.064) | NFE-F 21.2 | NFE-B 0.0 | Train Acc 0.9864 | Test Acc 0.9863
+Epoch 0003 | Time 0.316 (0.069) | NFE-F 23.5 | NFE-B 0.0 | Train Acc 0.9921 | Test Acc 0.9885
+Epoch 0004 | Time 0.417 (0.075) | NFE-F 25.6 | NFE-B 0.0 | Train Acc 0.9928 | Test Acc 0.9893
+Epoch 0005 | Time 0.377 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9950 | Test Acc 0.9918
+Epoch 0006 | Time 0.392 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9975 | Test Acc 0.9948
+Epoch 0007 | Time 0.342 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9947 | Test Acc 0.9912
+Epoch 0008 | Time 0.320 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9977 | Test Acc 0.9919
+Epoch 0009 | Time 0.382 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9977 | Test Acc 0.9916
+Epoch 0010 | Time 0.373 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9981 | Test Acc 0.9932
+Epoch 0011 | Time 0.415 (0.078) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9980 | Test Acc 0.9920
+Epoch 0012 | Time 0.324 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9986 | Test Acc 0.9926
+Epoch 0013 | Time 0.335 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9982 | Test Acc 0.9903
+Epoch 0014 | Time 0.334 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9986 | Test Acc 0.9931
+Epoch 0015 | Time 0.386 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9990 | Test Acc 0.9920
+Epoch 0016 | Time 0.328 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9998 | Test Acc 0.9936
+Epoch 0017 | Time 0.386 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 0.9993 | Test Acc 0.9918
+Epoch 0018 | Time 0.384 (0.078) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9941
+Epoch 0019 | Time 0.394 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9947
+Epoch 0020 | Time 0.374 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9942
+Epoch 0021 | Time 0.331 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9943
+Epoch 0022 | Time 0.386 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9947
+Epoch 0023 | Time 0.394 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9944
+Epoch 0024 | Time 0.394 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9938
+Epoch 0025 | Time 0.315 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9941
+Epoch 0026 | Time 0.376 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9941
+Epoch 0027 | Time 0.388 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0028 | Time 0.332 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0029 | Time 0.384 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9944
+Epoch 0030 | Time 0.334 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9943
+Epoch 0031 | Time 0.335 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9944
+Epoch 0032 | Time 0.323 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9943
+Epoch 0033 | Time 0.394 (0.078) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9943
+Epoch 0034 | Time 0.389 (0.080) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9943
+Epoch 0035 | Time 0.341 (0.079) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9944
+Epoch 0036 | Time 0.332 (0.080) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9944
+Epoch 0037 | Time 0.407 (0.078) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9943
+Epoch 0038 | Time 0.375 (0.079) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9944
+Epoch 0039 | Time 0.385 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0040 | Time 0.413 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0041 | Time 0.375 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0042 | Time 0.385 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0043 | Time 0.330 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0044 | Time 0.380 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9946
+Epoch 0045 | Time 0.387 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9946
+Epoch 0046 | Time 1.522 (0.087) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9947
+Epoch 0047 | Time 0.386 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9947
+Epoch 0048 | Time 0.335 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9946
+Epoch 0049 | Time 0.384 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9946
+Epoch 0050 | Time 0.372 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9946
+Epoch 0051 | Time 0.378 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9946
+Epoch 0052 | Time 0.382 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0053 | Time 0.328 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0054 | Time 2.606 (0.099) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0055 | Time 0.393 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0056 | Time 0.396 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0057 | Time 0.388 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0058 | Time 1.477 (0.087) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0059 | Time 0.380 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0060 | Time 2.106 (0.093) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0061 | Time 0.331 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0062 | Time 0.399 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0063 | Time 0.395 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0064 | Time 0.375 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0065 | Time 0.392 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0066 | Time 0.338 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0067 | Time 0.432 (0.079) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0068 | Time 0.408 (0.079) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0069 | Time 0.425 (0.080) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0070 | Time 0.397 (0.079) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0071 | Time 0.323 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0072 | Time 0.385 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0073 | Time 0.478 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0074 | Time 1.537 (0.088) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0075 | Time 0.396 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0076 | Time 0.395 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0077 | Time 0.395 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0078 | Time 0.394 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0079 | Time 0.406 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0080 | Time 0.383 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0081 | Time 0.406 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0082 | Time 0.373 (0.078) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0083 | Time 0.396 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0084 | Time 0.383 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0085 | Time 0.382 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0086 | Time 0.383 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0087 | Time 0.397 (0.078) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0088 | Time 0.325 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0089 | Time 0.328 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0090 | Time 0.328 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0091 | Time 0.378 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0092 | Time 0.405 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0093 | Time 0.386 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0094 | Time 0.402 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0095 | Time 0.386 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0096 | Time 0.413 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0097 | Time 0.335 (0.076) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0098 | Time 0.382 (0.077) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
+Epoch 0099 | Time 0.390 (0.078) | NFE-F 26.2 | NFE-B 0.0 | Train Acc 1.0000 | Test Acc 0.9945
