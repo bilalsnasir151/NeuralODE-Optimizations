@@ -106,7 +106,7 @@ results in
 
 '''
 
-def accuracy(model, dataset_loader, device):
+def accuracy(model, dataset_loader, device, profiler=None):
     total_correct = 0
     for x, y in dataset_loader:
         x = x.to(device)
@@ -115,6 +115,9 @@ def accuracy(model, dataset_loader, device):
         target_class = np.argmax(y, axis=1)
         predicted_class = np.argmax(model(x).cpu().detach().numpy(), axis=1)
         total_correct += np.sum(predicted_class == target_class)
+        
+        if profiler:
+            profiler.step()  # Step the profiler during inference
     return total_correct / len(dataset_loader.dataset)
 ''' ACCURACY EXPLANATION
 
