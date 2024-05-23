@@ -49,9 +49,9 @@ if __name__ == '__main__':
 
     # Load the dataset
     if args.mnist:
-        _, test_loader, _ = get_mnist_loaders(0, args.batch_size)  # We only need the test loader
+        _, test_loader, _ = get_mnist_loaders(128, args.batch_size)  # We only need the test loader
     else:
-        _, test_loader, _ = get_cifar10_loaders(0, args.batch_size)
+        _, test_loader, _ = get_cifar10_loaders(128, args.batch_size)
 
     logger.info(model)
     logger.info('Number of parameters: {}'.format(sum(p.numel() for p in model.parameters())))
