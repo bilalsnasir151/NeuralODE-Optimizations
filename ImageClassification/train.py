@@ -12,6 +12,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--mnist', type=eval, default=False, choices=[True, False])
 parser.add_argument('--tol', type=float, default=1e-3)
 parser.add_argument('--adjoint', type=eval, default=False, choices=[True, False])
+parser.add_argument('--method', type=str, default='dopri8')
 parser.add_argument('--nepochs', type=int, default=160)
 parser.add_argument('--lr', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=128)
@@ -43,7 +44,7 @@ if __name__ == '__main__':
     else:
         downsampling_layers = get_cifar10_downsampling_layers()
 
-    feature_layers = [ODEBlock(ODEfunc(64), odeint, args.tol)]
+    feature_layers = [ODEBlock(ODEfunc(64), odeint, args.tol, args.method)]
     fc_layers = get_fc_layers()
 
     model = nn.Sequential(*downsampling_layers, *feature_layers, *fc_layers).to(device)

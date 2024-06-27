@@ -95,18 +95,19 @@ class ODEfunc(nn.Module):
     
 class ODEBlock(nn.Module):
 
-    def __init__(self, odefunc, odeint, tol):
+    def __init__(self, odefunc, odeint, tol, method):
         super(ODEBlock, self).__init__()
         self.odefunc = odefunc
         self.integration_time = torch.tensor([0, 1]).float()
         self.odeint = odeint
         self.tol = tol
+        self.method = method
 
     def forward(self, x):
         self.integration_time = self.integration_time.type_as(x)
         rtol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
         atol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
-        out = self.odeint(self.odefunc, x, self.integration_time, rtol=rtol, atol=atol)
+        out = self.odeint(self.odefunc, x, self.integration_time, rtol=rtol, atol=atol, method=self.method)
         return out[1]
 
     @property
