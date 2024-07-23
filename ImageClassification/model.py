@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from utils import norm, Flatten
-
+import torchode as to
 
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -109,6 +109,21 @@ class ODEBlock(nn.Module):
         atol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
         out = self.odeint(self.odefunc, x, self.integration_time, rtol=rtol, atol=atol, method=self.method)
         return out[1]
+
+    def forwardParallel(self,x):
+        self.integration_time = self.integration_time.type_as(x)
+        rtol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
+        atol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
+
+        term = to.ODETerm(self.odefunc)
+        step_method = to.Dopri5(term=term)
+        step_size_controller = to.IntegralController(atol = atol, rtol = rtol, term = term)
+        adjoint = to.AutoDiffAdjoint(step_method, step_size_controller)
+        solver = torch.compile(adjoint)
+
+        out= solver.solve(to.InitialValueProblem(y0=x, t_eval=self.integration_time))
+        return out
+    
 
     @property
     def nfe(self):
