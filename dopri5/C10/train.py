@@ -16,69 +16,38 @@ import matplotlib.pyplot as plt
 parser = argparse.ArgumentParser()
 parser.add_argument('--tol', type=float, default=1e-3)
 parser.add_argument('--nepochs', type=int, default=160)
-parser.add_argument('--lr', type=float, default=0.1)
+parser.add_argument('--lr', type=float, default=0.01)  # Adjusted learning rate
 parser.add_argument('--batch_size', type=int, default=128)
-parser.add_argument('--save_path', type=str, default='./model.pth')
+parser.add_argument('--save_path', type=str, default='./model_cifar.pth')
 args = parser.parse_args()
 
 if __name__ == '__main__':
-
-    ## FIND GPU IF AVAILABLE ##
-    # CUDA First Option #
-    # MPS Second Option #
-    # CPU Last Resort # 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     print(device)
 
     ## Load Data ##
-    # 1. Load MNIST Data
-    # Data transformations
     transform = transforms.Compose([
         transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # Normalize RGB channels
     ])
 
-    # Load the dataset
-    train_dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
-    test_dataset = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
-    print("TRAIN: ", train_dataset)
-    print("data: ", train_dataset.data.size())
-    print("targets: ", train_dataset.targets.size())
-
-    print("TEST: ", test_dataset)
-
-    # Create data loaders
+    # Load the CIFAR-10 dataset
+    train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+    test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
     train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size, shuffle=True)
     test_loader = DataLoader(dataset=test_dataset, batch_size=args.batch_size, shuffle=False)
 
-    figure = plt.figure(figsize=(10, 8))
-    cols, rows = 5, 5
-    for i in range(1, cols * rows + 1):
-        sample_idx = torch.randint(len(train_dataset), size=(1,)).item()
-        img, label = train_dataset[sample_idx]
-        figure.add_subplot(rows, cols, i)
-        plt.title(label)
-        plt.axis("off")
-        plt.imshow(img.squeeze(), cmap="gray")
-    plt.show()
-
-    ## CONSTRUCT THE NETWORK ##
-    # NETWORK STRUCTURE #
-
-
-    # 1. Downsample the data
     class Downsample(nn.Module):
         def __init__(self):
             super(Downsample, self).__init__()
             self.downsample = nn.Sequential(
-                nn.Conv2d(1, 64, kernel_size=3, stride=2, padding=1),
+                nn.Conv2d(3, 64, kernel_size=3, stride=2, padding=1),  # Change input channels to 3
                 nn.BatchNorm2d(64),
                 nn.ReLU(),
-
-                nn.Conv2d(64,64,kernel_size=3, stride=2, padding=1),
+                nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),
                 nn.BatchNorm2d(64),
                 nn.ReLU(),
-
-                nn.Conv2d(64,64,kernel_size=3, stride=2, padding=1),
+                nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),
                 nn.BatchNorm2d(64),
                 nn.ReLU(),
             )
@@ -86,6 +55,7 @@ if __name__ == '__main__':
         def forward(self, x):
             return self.downsample(x)
 
+    # The rest of the ODE and NeuralODE classes can remain the same.
     # 2. ODE function
     
     class ConcatConv2d(nn.Module):
@@ -143,9 +113,8 @@ if __name__ == '__main__':
             out = self.odeint(self.odefunc, x, self.integration_time, rtol=rtol, atol=atol, method=self.method)
             print("Output of odeint:", out)  # Debugging line to inspect the output
             return out
-
-
-    # 3. Output prediction / classifier
+        
+        
     class Classifier(nn.Module):
         def __init__(self, downsample, neuralODE):
             super(Classifier, self).__init__()
@@ -154,7 +123,7 @@ if __name__ == '__main__':
             self.classifier = nn.Sequential(  
                 nn.AdaptiveAvgPool2d((1, 1)),
                 nn.Flatten(),
-                nn.Linear(64, 10)
+                nn.Linear(64, 10)  # No change needed here as the output classes remain the same
             )
 
         def forward(self, x):
@@ -163,28 +132,20 @@ if __name__ == '__main__':
             x = self.classifier(x)
             return x
 
-
-    ## Training Loop ##
-    # 1. Train Model on MNIST Data
-    # 2. Output Training accuracy
     model = Classifier(Downsample(), NeuralODE(ODEfunc(64), odeint=odeint, tol=args.tol, method='dopri5')).to(device)
-    print(model)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     for epoch in range(args.nepochs):
         model.train()
         for inputs, labels in train_loader:
-            print("batch starterd")
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
-            print("batch done")
 
-        # Optionally add validation accuracy check
         model.eval()
         correct = 0
         total = 0
@@ -198,6 +159,5 @@ if __name__ == '__main__':
 
         print(f'Epoch [{epoch + 1}/{args.nepochs}], Loss: {loss.item():.4f}, Accuracy: {100 * correct / total:.2f}%')
 
-            # Save the model
     torch.save(model.state_dict(), args.save_path)
     print(f'Model saved to {args.save_path}')
