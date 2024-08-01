@@ -11,20 +11,17 @@ import torch.profiler
 parser = argparse.ArgumentParser()
 parser.add_argument('--mnist', type=eval, default=False, choices=[True, False])
 parser.add_argument('--tol', type=float, default=1e-3)
-parser.add_argument('--adjoint', type=eval, default=False, choices=[True, False])
 parser.add_argument('--method', type=str, default='dopri8')
 parser.add_argument('--nepochs', type=int, default=160)
 parser.add_argument('--lr', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=128)
 parser.add_argument('--test_batch_size', type=int, default=1000)
 parser.add_argument('--save', type=str, default='./experiment1')
-parser.add_argument('--debug', action='store_true')
 args = parser.parse_args()
 
-if args.adjoint:
-    from torchdiffeq import odeint_adjoint as odeint
-else:
-    from torchdiffeq import odeint
+
+from torchdiffeq import odeint_adjoint as odeint
+
 
 if __name__ == '__main__':
 
