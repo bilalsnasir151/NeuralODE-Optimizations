@@ -2,6 +2,7 @@ import os
 import argparse
 import torch
 import torch.nn as nn
+from torch.profiler import profile, record_function, ProfilerActivity
 from model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
 from utils import accuracy, get_logger, count_parameters
 from data import get_mnist_loaders, get_cifar10_loaders
@@ -20,11 +21,8 @@ if __name__ == '__main__':
 
     torch.set_default_dtype(torch.float32)
 
-    # find device
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    print(device)
 
-    # first section of network, primarily focusing on reducing spatial dimensions of input while extracting basic to complex features
     if args.mnist:
         downsampling_layers = get_mnist_downsampling_layers()
     else:
@@ -46,6 +44,13 @@ if __name__ == '__main__':
         _, test_loader, _ = get_cifar10_loaders(args.batch_size, args.batch_size)
 
     with torch.no_grad():
-        test_acc = accuracy(model, test_loader, device)
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], 
+                     record_shapes=True, 
+                     profile_memory=True, 
+                     with_stack=True, 
+                     on_trace_ready=torch.profiler.tensorboard_trace_handler('./profiler_logs')) as prof:
+            with record_function("model_inference"):
+                test_acc = accuracy(model, test_loader, device)
+                prof.step()  # Manually step the profiler
 
     print(f'Test Accuracy: {test_acc:.4f}')

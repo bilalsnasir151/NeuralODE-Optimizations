@@ -4,6 +4,8 @@ import time
 import torch
 import torch.nn as nn
 from model import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
+#from torchODEModel import ODEfunc, ODEBlock, get_mnist_downsampling_layers, get_fc_layers, get_cifar10_downsampling_layers
+
 from utils import RunningAverageMeter, inf_generator, learning_rate_with_decay, accuracy, makedirs, get_logger, count_parameters
 from data import get_mnist_loaders, get_cifar10_loaders
 import torch.profiler
@@ -42,6 +44,7 @@ if __name__ == '__main__':
         downsampling_layers = get_cifar10_downsampling_layers()
 
     feature_layers = [ODEBlock(ODEfunc(64), odeint, args.tol, args.method)]
+    #feature_layers = [ODEBlock(ODEfunc(64), args.tol)]
     fc_layers = get_fc_layers()
 
     model = nn.Sequential(*downsampling_layers, *feature_layers, *fc_layers).to(device)

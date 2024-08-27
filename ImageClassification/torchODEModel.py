@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-from utils import norm, Flatten
-
+from ImageClassification.torchdiffeq.utils import norm, Flatten
+import torchode as to
 
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
@@ -52,7 +52,6 @@ def get_cifar10_downsampling_layers():
 ##MNIST NODE BLOCK##
 #neural ode concatenation of time
 class ConcatConv2d(nn.Module):
-
     def __init__(self, dim_in, dim_out, ksize=3, stride=1, padding=0, dilation=1, groups=1, bias=True, transpose=False):
         super(ConcatConv2d, self).__init__()
         module = nn.ConvTranspose2d if transpose else nn.Conv2d
@@ -62,12 +61,13 @@ class ConcatConv2d(nn.Module):
         )
 
     def forward(self, t, x):
-        tt = torch.ones_like(x[:, :1, :, :]) * t
-        ttx = torch.cat([tt, x], 1)
+        # Broadcast t to match the shape of x (batch, 1, height, width)
+        tt = t.view(-1, 1, 1, 1).expand_as(x[:, :1, :, :])
+        ttx = torch.cat([tt, x], dim=1)
         return self._layer(ttx)
 
-class ODEfunc(nn.Module):
 
+class ODEfunc(nn.Module):
     def __init__(self, dim):
         super(ODEfunc, self).__init__()
         self.norm1 = norm(dim)
@@ -78,38 +78,83 @@ class ODEfunc(nn.Module):
         self.norm3 = norm(dim)
         self.nfe = 0
 
-    def forward(self, t, x):
+    def forward(self, t, y, args):
         self.nfe += 1
 
-        out = self.norm1(x)
+        # Unpack the shape information
+        channels, height, width = args
+
+        # Reshape y from 2D to 4D for convolution
+        print(f"Shape before reshaping: {y.shape}")
+        y = y.view(-1, channels, height, width)
+        print(f"Shape after reshaping: {y.shape}")
+
+        out = self.norm1(y)
         out = self.relu(out)
         out = self.conv1(t, out)
+        print(f"Shape after conv1: {out.shape}")
 
         out = self.norm2(out)
         out = self.relu(out)
         out = self.conv2(t, out)
+        print(f"Shape after conv2: {out.shape}")
 
         out = self.norm3(out)
-        return out
-    
-class ODEBlock(nn.Module):
 
-    def __init__(self, odefunc, odeint, tol, method):
+        # Flatten back to 2D before returning
+        out = out.flatten(start_dim=1)
+        print(f"Shape after flattening: {out.shape}")
+
+        return out
+
+
+class ODEBlock(nn.Module):
+    def __init__(self, odefunc, tol=1e-7, method='dopri5'):
         super(ODEBlock, self).__init__()
         self.odefunc = odefunc
-        self.integration_time = torch.tensor([0, 1]).float()
-        self.odeint = odeint
         self.tol = tol
         self.method = method
 
+        # Initialize TorchODE components
+        self.term = to.ODETerm(odefunc, with_args=True)
+        self.step_method = to.Dopri5(term=self.term)
+        self.step_size_controller = to.IntegralController(atol=tol, rtol=tol, term=self.term)
+        self.adjoint = to.AutoDiffAdjoint(self.step_method, self.step_size_controller)
+
     def forward(self, x):
-        self.integration_time = self.integration_time.type_as(x)
-        rtol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
-        atol = torch.as_tensor(self.tol, dtype=torch.float32, device=x.device)
-        out = self.odeint(self.odefunc, x, self.integration_time, rtol=rtol, atol=atol, method=self.method)
-        return out[1]
+        batch_size, channels, height, width = x.size()
 
+        # Flatten the input tensor to 2D (batch_size, channels*height*width)
+        y0 = x.view(batch_size, -1)
+        print(f"Shape of y0: {y0.shape}")  # Expect [128, channels*height*width]
 
+        # Time evaluation: Properly batch the time points
+        t_eval = torch.tensor([0.0, 1.0], device=x.device).unsqueeze(0).repeat(batch_size, 1)
+        print(f"Shape of t_eval: {t_eval.shape}")  # Should be [batch_size, 2]
+
+        # Create the initial value problem
+        problem = to.InitialValueProblem(y0=y0, t_eval=t_eval)
+        print(f"Shape of y0 after creating problem: {problem.y0.shape}")  # Should match y0 shape
+
+        # Solve the problem
+        solution = self.adjoint.solve(problem, args=(channels, height, width))
+        print("THIS IS HOW SOLUTION LOOKS: ", solution)
+        print("SOLUTIONS SHAPE: ", solution.ys)
+
+        # Select the last time step's output for reshaping
+        solution_ys = solution.ys[-1]
+        print(f"Shape of solution.ys[-1]: {solution_ys.shape}")  # Should match [batch_size, -1]
+
+        # Reshape back to the original 4D shape (batch_size, channels, height, width)
+        try:
+            out = solution_ys.view(batch_size, channels, height, width)
+        except RuntimeError as e:
+            print(f"Error reshaping: {e}")
+            print(f"Expected shape: {[batch_size, channels, height, width]}")
+            print(f"Actual number of elements: {solution_ys.numel()}")
+            raise
+
+        return out
     @property
     def nfe(self):
         return self.odefunc.nfe
@@ -117,6 +162,8 @@ class ODEBlock(nn.Module):
     @nfe.setter
     def nfe(self, value):
         self.odefunc.nfe = value
+
+
 
 
 ##MNIST FC LAYERS##

@@ -116,8 +116,6 @@ def accuracy(model, dataset_loader, device, profiler=None):
         predicted_class = np.argmax(model(x).cpu().detach().numpy(), axis=1)
         total_correct += np.sum(predicted_class == target_class)
         
-        if profiler:
-            profiler.step()  # Step the profiler during inference
     return total_correct / len(dataset_loader.dataset)
 ''' ACCURACY EXPLANATION
 
